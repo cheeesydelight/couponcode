@@ -12,3 +12,5 @@ services:
         value: https://cheesydelight-80a43-default-rtdb.firebaseio.com
       - key: ADMIN_API_KEY
         value: super-secret-admin-key
+      - key: PYO3_USE_ABI3_FORWARD_COMPATIBILITY
+        value: "1"  # ✅ This is the key fix
