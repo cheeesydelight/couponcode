@@ -1,8 +1,8 @@
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from models import (
     CouponCreate, CouponResponse,
-    CouponValidateRequest, CouponValidateResponse, CartItem
+    CouponValidateRequest, CouponValidateResponse
 )
 from firebase_util import db_ref
 from datetime import datetime
@@ -13,33 +13,39 @@ load_dotenv()
 
 app = FastAPI()
 
-# 🔐 Allow frontend CORS
+# ✅ CORS setup
+origins = [
+    "http://127.0.0.1:5500",             # Local development
+    "http://localhost:5500",
+    "https://cheeesydelight.github.io"   # GitHub Pages frontend
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500"],  # your frontend origin
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# 🔐 Admin key from environment
 ADMIN_KEY = os.getenv("ADMIN_API_KEY")
 
-# 🔐 Admin API key check
 def check_admin(api_key: str = Header(..., alias="x-api-key")):
     if api_key != ADMIN_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
-
 
 # 🎯 1. CREATE COUPON
 @app.post("/api/coupons", response_model=CouponResponse)
 def create_coupon(coupon: CouponCreate, api_key: str = Header(..., alias="x-api-key")):
     check_admin(api_key)
 
-    # ✅ Enforce only 'percent'
     if coupon.type != "percent":
         raise HTTPException(status_code=400, detail="Only 'percent' type coupons are allowed")
 
-    coupon_ref = db_ref.child("coupons").child(coupon.code.upper())
+    code = coupon.code.strip().upper()
+    coupon_ref = db_ref.child("coupons").child(code)
+
     if coupon_ref.get():
         raise HTTPException(status_code=409, detail="Coupon code already exists")
 
@@ -53,8 +59,7 @@ def create_coupon(coupon: CouponCreate, api_key: str = Header(..., alias="x-api-
         data["expiresAt"] = coupon.expiresAt
 
     coupon_ref.set(data)
-    return {"message": f"✅ Coupon {coupon.code.upper()} created successfully"}
-
+    return {"message": f"✅ Coupon {code} created successfully"}
 
 # 🎯 2. VALIDATE COUPON
 @app.post("/api/coupons/validate", response_model=CouponValidateResponse)
@@ -62,76 +67,57 @@ def validate_coupon(body: CouponValidateRequest, request: Request):
     session_id = body.sessionId
     code = body.code.strip().upper()
 
-    # Check if already used
+    # Check previous usage
     used = db_ref.child("couponUsage").child(session_id).get()
     if used and used.get("coupon") == code:
-        return {
-            "valid": False,
-            "message": "❌ Coupon already used in this session"
-        }
+        return {"valid": False, "message": "❌ Coupon already used in this session"}
 
-    # Load coupon
+    # Load coupon data
     data = db_ref.child("coupons").child(code).get()
     if not data:
-        return {
-            "valid": False,
-            "message": "❌ Invalid coupon"
-        }
+        return {"valid": False, "message": "❌ Invalid coupon"}
 
     if data["usesLeft"] != -1 and data["usesLeft"] <= 0:
-        return {
-            "valid": False,
-            "message": "❌ Coupon usage limit reached"
-        }
+        return {"valid": False, "message": "❌ Coupon usage limit reached"}
 
     if "expiresAt" in data:
         try:
-            if datetime.utcnow() > datetime.fromisoformat(data["expiresAt"].replace("Z", "")):
-                return {
-                    "valid": False,
-                    "message": "❌ Coupon has expired"
-                }
+            expiry = datetime.fromisoformat(data["expiresAt"].replace("Z", ""))
+            if datetime.utcnow() > expiry:
+                return {"valid": False, "message": "❌ Coupon has expired"}
         except:
-            pass
+            pass  # invalid format? fail silently
 
-    # Merge previous items from order (if any)
+    # Combine cart items
     prev = db_ref.child("orders").child(session_id).get()
     previous_items = prev.get("items", []) if prev else []
     current_items = [i.dict() for i in body.cart]
     all_items = previous_items + current_items
 
-    # Merge identical items
     merged = {}
     for item in all_items:
-        item_id = item["id"]
-        if item_id not in merged:
-            merged[item_id] = item.copy()
+        if item["id"] not in merged:
+            merged[item["id"]] = item.copy()
         else:
-            merged[item_id]["qty"] += item["qty"]
+            merged[item["id"]]["qty"] += item["qty"]
 
     items = list(merged.values())
     subtotal = sum(i["price"] * i["qty"] for i in items)
 
-    # ✅ Only percent coupons now
+    # 💯 Only percent coupons
     if data["type"] != "percent":
-        return {
-            "valid": False,
-            "message": "❌ Only percentage-based coupons are supported"
-        }
+        return {"valid": False, "message": "❌ Only percentage-based coupons are supported"}
 
     discount = round(subtotal * (data["amount"] / 100))
     discount = min(discount, subtotal)
     new_total = subtotal - discount
 
-    label = f"{data['amount']}% off"
-
     return {
         "valid": True,
         "discount": discount,
         "newTotal": new_total,
-        "message": f"✅ {code} applied – {label}"
+        "message": f"✅ {code} applied – {data['amount']}% off"
     }
-
 
 # 🎯 3. REDEEM COUPON
 @app.post("/api/coupons/{code}/redeem")
