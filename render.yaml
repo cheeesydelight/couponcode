@@ -13,4 +13,4 @@ services:
       - key: ADMIN_API_KEY
         value: super-secret-admin-key
       - key: PYO3_USE_ABI3_FORWARD_COMPATIBILITY
-        value: "1"   # ✅ This is the critical fix
+        value: "1"  # 🧠 prevents Rust build
